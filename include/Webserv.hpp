@@ -15,12 +15,15 @@ public:
     void run();
 
 private:
-    std::vector<ServerConfig>   _configs;
-    std::vector<int>            _serverFds;
-    std::map<int,int>           _fdToConfig;
-    std::map<int,Connection*>   _connections;
-    std::map<int,int>           _cgiToClient;
-    std::vector<pollfd>         _pollfds;
+    std::vector<ServerConfig>         _configs;
+    std::vector<int>                  _serverFds;
+    // server fd -> list of config indices (virtual hosting)
+    std::map<int, std::vector<int> >  _serverFdToConfigs;
+    // client fd -> selected config index (after Host header matching)
+    std::map<int, int>                _fdToConfig;
+    std::map<int, Connection*>        _connections;
+    std::map<int, int>                _cgiToClient;
+    std::vector<pollfd>               _pollfds;
 
     void setupServers();
     int  createServerSocket(const ServerConfig& cfg);
@@ -32,7 +35,6 @@ private:
     void checkTimeouts();
     void rebuildPollFds();
     bool isServerFd(int fd) const;
-    const ServerConfig& getConfigForClient(int clientFd) const;
 };
 
 #endif

@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <csignal>
 #include <cstring>
 #include <cerrno>
 #include <cstdlib>
@@ -19,8 +20,13 @@ CgiHandler::~CgiHandler() {
     if (_readFd >= 0) { close(_readFd); _readFd = -1; }
     if (_writeFd >= 0) { close(_writeFd); _writeFd = -1; }
     if (_pid > 0) {
+        // Signal the child to terminate, then reap it.
+        // If SIGCHLD is SIG_IGN the kernel already reaped the zombie;
+        // kill/waitpid may return -1/ECHILD in that case — that is fine.
+        kill(_pid, SIGTERM);
         int status;
-        waitpid(_pid, &status, WNOHANG);
+        (void)waitpid(_pid, &status, WNOHANG);
+        _pid = -1;
     }
 }
 
@@ -97,10 +103,26 @@ bool CgiHandler::launch() {
         envp.push_back(const_cast<char*>(envVec[i].c_str()));
     envp.push_back(NULL);
 
-    std::vector<char*> args;
+    // Resolve the script basename for use after chdir()
+    std::string scriptDir  = _scriptPath;
+    std::string scriptBase = _scriptPath;
+    size_t slash = _scriptPath.rfind('/');
+    if (slash != std::string::npos) {
+        scriptDir  = _scriptPath.substr(0, slash);
+        scriptBase = _scriptPath.substr(slash + 1);
+    } else {
+        scriptDir = ".";
+    }
+
+    // args[0]: interpreter (if cgi_pass set), args[1]: script basename
+    std::vector<std::string> argStrings;
     if (!_loc.cgi_pass.empty())
-        args.push_back(const_cast<char*>(_loc.cgi_pass.c_str()));
-    args.push_back(const_cast<char*>(_scriptPath.c_str()));
+        argStrings.push_back(_loc.cgi_pass);
+    argStrings.push_back(scriptBase);
+
+    std::vector<char*> args;
+    for (size_t i = 0; i < argStrings.size(); ++i)
+        args.push_back(const_cast<char*>(argStrings[i].c_str()));
     args.push_back(NULL);
 
     _pid = fork();
@@ -112,7 +134,7 @@ bool CgiHandler::launch() {
     }
 
     if (_pid == 0) {
-        // child
+        // child: redirect stdin/stdout, chdir to script dir, then execve
         dup2(stdin_pipe[0], STDIN_FILENO);
         dup2(stdout_pipe[1], STDOUT_FILENO);
         close(stdin_pipe[1]);
@@ -120,11 +142,7 @@ bool CgiHandler::launch() {
         close(stdin_pipe[0]);
         close(stdout_pipe[1]);
 
-        std::string dir = _scriptPath;
-        size_t slash = dir.rfind('/');
-        if (slash != std::string::npos)
-            chdir(dir.substr(0, slash).c_str());
-
+        chdir(scriptDir.c_str());
         execve(args[0], &args[0], &envp[0]);
         _exit(1);
     }
@@ -169,19 +187,20 @@ std::string CgiHandler::readOutput() {
 
 bool CgiHandler::isFinished() {
     if (_finished) return true;
-    if (_pid > 0) {
-        int status;
-        pid_t result = waitpid(_pid, &status, WNOHANG);
-        if (result == _pid) {
+    // With SIGCHLD=SIG_IGN the kernel auto-reaps children, so waitpid() may
+    // return ECHILD immediately.  We treat the pipe EOF (set by readOutput())
+    // as the sole completion signal; just drain any remaining bytes here.
+    if (_readFd < 0) {
+        _finished = true;
+    } else {
+        char buf[4096];
+        ssize_t n;
+        while ((n = read(_readFd, buf, sizeof(buf))) > 0)
+            _output.append(buf, static_cast<size_t>(n));
+        if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+            close(_readFd);
+            _readFd = -1;
             _pid = -1;
-            if (_readFd >= 0) {
-                char buf[4096];
-                ssize_t n;
-                while ((n = read(_readFd, buf, sizeof(buf))) > 0)
-                    _output.append(buf, static_cast<size_t>(n));
-                close(_readFd);
-                _readFd = -1;
-            }
             _finished = true;
         }
     }

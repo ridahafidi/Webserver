@@ -9,6 +9,8 @@
 #include <cerrno>
 #include <iostream>
 #include <csignal>
+#include <sstream>
+#include <sys/wait.h>
 
 static volatile bool g_running = true;
 
@@ -27,18 +29,50 @@ Webserv::~Webserv() {
         close(_serverFds[i]);
 }
 
+// Group configs by "host:port" so that virtual-hosted server blocks (same
+// port, different server_name) share a single listening socket.
 void Webserv::setupServers() {
+    // ordered list of (host:port key -> vector of config indices)
+    std::vector<std::pair<std::string, std::vector<int> > > groups;
+
     for (size_t i = 0; i < _configs.size(); ++i) {
-        int fd = createServerSocket(_configs[i]);
+        std::ostringstream key;
+        key << _configs[i].host << ":" << _configs[i].port;
+        std::string k = key.str();
+
+        bool found = false;
+        for (size_t g = 0; g < groups.size(); ++g) {
+            if (groups[g].first == k) {
+                groups[g].second.push_back(static_cast<int>(i));
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std::vector<int> v;
+            v.push_back(static_cast<int>(i));
+            groups.push_back(std::make_pair(k, v));
+        }
+    }
+
+    for (size_t g = 0; g < groups.size(); ++g) {
+        const std::vector<int>& indices = groups[g].second;
+        const ServerConfig& primary = _configs[static_cast<size_t>(indices[0])];
+
+        int fd = createServerSocket(primary);
         if (fd < 0) {
-            std::cerr << "Failed to create server socket for port "
-                      << _configs[i].port << std::endl;
+            std::cerr << "Failed to create server socket for "
+                      << primary.host << ":" << primary.port << std::endl;
             continue;
         }
         _serverFds.push_back(fd);
-        _fdToConfig[fd] = static_cast<int>(i);
-        std::cout << "Listening on " << _configs[i].host
-                  << ":" << _configs[i].port << std::endl;
+        _serverFdToConfigs[fd] = indices;
+
+        std::cout << "Listening on " << primary.host
+                  << ":" << primary.port;
+        if (indices.size() > 1)
+            std::cout << " (" << indices.size() << " virtual hosts)";
+        std::cout << std::endl;
     }
 }
 
@@ -59,11 +93,13 @@ int Webserv::createServerSocket(const ServerConfig& cfg) {
     addr.sin_family = AF_INET;
     addr.sin_port   = htons(static_cast<uint16_t>(cfg.port));
     if (cfg.host == "0.0.0.0" || cfg.host.empty())
-        addr.sin_addr.s_addr = INADDR_ANY;
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
     else
         inet_pton(AF_INET, cfg.host.c_str(), &addr.sin_addr);
 
     if (bind(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
+        std::cerr << "bind() failed for " << cfg.host << ":" << cfg.port
+                  << " – " << strerror(errno) << std::endl;
         close(fd);
         return -1;
     }
@@ -86,7 +122,7 @@ void Webserv::rebuildPollFds() {
 
     for (size_t i = 0; i < _serverFds.size(); ++i) {
         pollfd pfd;
-        pfd.fd = _serverFds[i];
+        pfd.fd      = _serverFds[i];
         pfd.events  = POLLIN;
         pfd.revents = 0;
         _pollfds.push_back(pfd);
@@ -99,13 +135,13 @@ void Webserv::rebuildPollFds() {
 
         if (state == CONN_READING) {
             pollfd pfd;
-            pfd.fd = conn->getFd();
+            pfd.fd      = conn->getFd();
             pfd.events  = POLLIN;
             pfd.revents = 0;
             _pollfds.push_back(pfd);
         } else if (state == CONN_WRITING) {
             pollfd pfd;
-            pfd.fd = conn->getFd();
+            pfd.fd      = conn->getFd();
             pfd.events  = POLLOUT;
             pfd.revents = 0;
             _pollfds.push_back(pfd);
@@ -113,12 +149,13 @@ void Webserv::rebuildPollFds() {
             int cgiFd = conn->getCgiFd();
             if (cgiFd >= 0) {
                 pollfd pfd;
-                pfd.fd = cgiFd;
+                pfd.fd      = cgiFd;
                 pfd.events  = POLLIN;
                 pfd.revents = 0;
                 _pollfds.push_back(pfd);
                 _cgiToClient[cgiFd] = conn->getFd();
             } else {
+                // CGI fd already closed – collect remaining output
                 conn->onCgiReadable();
             }
         }
@@ -138,11 +175,10 @@ void Webserv::acceptConnection(int serverFd) {
     inet_ntop(AF_INET, &clientAddr.sin_addr, ip, sizeof(ip));
     std::string clientIP(ip);
 
-    int cfgIdx = _fdToConfig[serverFd];
-    Connection* conn = new Connection(clientFd, clientIP,
-                                      _configs[static_cast<size_t>(cfgIdx)]);
+    const std::vector<int>& cfgIndices = _serverFdToConfigs[serverFd];
+    Connection* conn = new Connection(clientFd, clientIP, _configs, cfgIndices);
     _connections[clientFd] = conn;
-    _fdToConfig[clientFd]  = cfgIdx;
+    _fdToConfig[clientFd]  = cfgIndices[0];
 }
 
 void Webserv::handleClientRead(int fd) {
@@ -187,26 +223,35 @@ void Webserv::closeConnection(int fd) {
 void Webserv::checkTimeouts() {
     time_t now = time(NULL);
     std::vector<int> toClose;
+
     for (std::map<int,Connection*>::iterator it = _connections.begin();
          it != _connections.end(); ++it) {
-        if (now - it->second->getLastActivity() > 60)
+        Connection* conn = it->second;
+
+        // Kill idle connections that have been silent for 60 seconds
+        if (now - conn->getLastActivity() > 60) {
             toClose.push_back(it->first);
+            continue;
+        }
+
+        // Kill CGI scripts that have been running for more than 10 seconds
+        if (conn->getState() == CONN_CGI_WAIT
+                && conn->getCgiStartTime() > 0
+                && now - conn->getCgiStartTime() > 10) {
+            toClose.push_back(it->first);
+        }
     }
+
     for (size_t i = 0; i < toClose.size(); ++i)
         closeConnection(toClose[i]);
-}
-
-const ServerConfig& Webserv::getConfigForClient(int clientFd) const {
-    std::map<int,int>::const_iterator it = _fdToConfig.find(clientFd);
-    if (it != _fdToConfig.end())
-        return _configs[static_cast<size_t>(it->second)];
-    return _configs[0];
 }
 
 void Webserv::run() {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGINT,  signalHandler);
     signal(SIGTERM, signalHandler);
+    // Reap zombie CGI children automatically
+    signal(SIGCHLD, SIG_IGN); // auto-reap CGI children, no zombies
 
     setupServers();
     if (_serverFds.empty()) {

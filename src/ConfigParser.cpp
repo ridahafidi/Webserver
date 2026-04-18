@@ -209,7 +209,7 @@ void ConfigParser::validate(const std::vector<ServerConfig>& configs) {
     if (configs.empty())
         throw std::runtime_error("No server blocks found in config");
     for (size_t i = 0; i < configs.size(); ++i) {
-        if (configs[i].port <= 0 || configs[i].port > 65535)
+        if (configs[i].port < 1 || configs[i].port > 65535)
             throw std::runtime_error("Invalid port number (must be 1-65535)");
     }
 }

@@ -8,25 +8,29 @@
 #include <cctype>
 #include <cstdlib>
 
-Connection::Connection(int fd, const std::string& clientIP, const ServerConfig& cfg)
-    : _fd(fd), _clientIP(clientIP), _cfg(&cfg),
+Connection::Connection(int fd, const std::string& clientIP,
+                       const std::vector<ServerConfig>& allConfigs,
+                       const std::vector<int>& cfgIndices)
+    : _fd(fd), _clientIP(clientIP),
+      _allConfigs(&allConfigs), _cfgIndices(cfgIndices),
+      _cfg(&allConfigs[static_cast<size_t>(cfgIndices[0])]),
       _state(CONN_READING), _cgi(NULL),
-      _lastActivity(time(NULL)), _keepAlive(true) {}
+      _lastActivity(time(NULL)), _cgiStartTime(0), _keepAlive(true) {}
 
 Connection::~Connection() {
     if (_cgi) { delete _cgi; _cgi = NULL; }
     if (_fd >= 0) { close(_fd); _fd = -1; }
 }
 
-int                 Connection::getFd()          const { return _fd; }
-const std::string&  Connection::getClientIP()    const { return _clientIP; }
-ConnectionState     Connection::getState()       const { return _state; }
+int                 Connection::getFd()           const { return _fd; }
+const std::string&  Connection::getClientIP()     const { return _clientIP; }
+ConnectionState     Connection::getState()        const { return _state; }
 void                Connection::setState(ConnectionState s) { _state = s; }
 time_t              Connection::getLastActivity() const { return _lastActivity; }
-const ServerConfig& Connection::getConfig()      const { return *_cfg; }
-void                Connection::setConfig(const ServerConfig& cfg) { _cfg = &cfg; }
-HttpRequest&        Connection::getRequest()           { return _request; }
-CgiHandler*         Connection::getCgiHandler()        { return _cgi; }
+time_t              Connection::getCgiStartTime() const { return _cgiStartTime; }
+const ServerConfig& Connection::getConfig()       const { return *_cfg; }
+HttpRequest&        Connection::getRequest()            { return _request; }
+CgiHandler*         Connection::getCgiHandler()         { return _cgi; }
 void                Connection::setCgiHandler(CgiHandler* h) { _cgi = h; }
 
 int Connection::getCgiFd() const {
@@ -36,6 +40,27 @@ int Connection::getCgiFd() const {
 
 bool Connection::shouldClose() const {
     return _state == CONN_CLOSE;
+}
+
+// Pick the ServerConfig whose server_name best matches the request's Host header.
+// Falls back to the first config (the default) when no name matches.
+void Connection::selectConfig() {
+    std::string host = _request.getHeader("host");
+    size_t colon = host.find(':');
+    if (colon != std::string::npos)
+        host = host.substr(0, colon);
+
+    for (size_t i = 0; i < _cfgIndices.size(); ++i) {
+        const ServerConfig& cfg =
+            (*_allConfigs)[static_cast<size_t>(_cfgIndices[i])];
+        for (size_t j = 0; j < cfg.server_names.size(); ++j) {
+            if (cfg.server_names[j] == host) {
+                _cfg = &cfg;
+                return;
+            }
+        }
+    }
+    _cfg = &(*_allConfigs)[static_cast<size_t>(_cfgIndices[0])];
 }
 
 bool Connection::onReadable() {
@@ -72,11 +97,13 @@ bool Connection::onReadable() {
 }
 
 void Connection::processRequest() {
+    selectConfig();
     HttpResponse resp(_request, *_cfg, _clientIP);
     std::string response = resp.build();
 
     if (resp.needsCgi()) {
         _cgi = resp.getCgiHandler();
+        _cgiStartTime = time(NULL);
         _state = CONN_CGI_WAIT;
     } else {
         _writeBuffer = response;
@@ -160,7 +187,8 @@ bool Connection::onCgiReadable() {
             if (start != std::string::npos) val = val.substr(start);
             std::string keyLow = key;
             for (size_t i = 0; i < keyLow.size(); ++i)
-                keyLow[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(keyLow[i])));
+                keyLow[i] = static_cast<char>(
+                    std::tolower(static_cast<unsigned char>(keyLow[i])));
             if (keyLow == "status") {
                 char* endptr;
                 long parsed = std::strtol(val.c_str(), &endptr, 10);
@@ -190,6 +218,7 @@ bool Connection::onCgiReadable() {
 
         delete _cgi;
         _cgi = NULL;
+        _cgiStartTime = 0;
         _state = CONN_WRITING;
         _lastActivity = time(NULL);
     }
