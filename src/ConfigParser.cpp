@@ -106,9 +106,13 @@ ServerConfig ConfigParser::parseServerBlock() {
             size_t colon = val.find(':');
             if (colon != std::string::npos) {
                 cfg.host = val.substr(0, colon);
-                cfg.port = std::atoi(val.substr(colon + 1).c_str());
+                char* endptr;
+                long p = std::strtol(val.substr(colon + 1).c_str(), &endptr, 10);
+                cfg.port = static_cast<int>(p);
             } else {
-                cfg.port = std::atoi(val.c_str());
+                char* endptr;
+                long p = std::strtol(val.c_str(), &endptr, 10);
+                cfg.port = static_cast<int>(p);
             }
             consume(); // ;
         } else if (key == "server_name") {
@@ -206,6 +210,6 @@ void ConfigParser::validate(const std::vector<ServerConfig>& configs) {
         throw std::runtime_error("No server blocks found in config");
     for (size_t i = 0; i < configs.size(); ++i) {
         if (configs[i].port <= 0 || configs[i].port > 65535)
-            throw std::runtime_error("Invalid port number");
+            throw std::runtime_error("Invalid port number (must be 1-65535)");
     }
 }

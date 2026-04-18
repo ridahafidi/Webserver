@@ -122,8 +122,12 @@ bool HttpRequest::feed(const char* data, size_t len) {
             if (!parseLine(line)) break;
             if (line.empty()) {
                 std::string cl = getHeader("content-length");
-                if (!cl.empty())
-                    _contentLength = static_cast<size_t>(std::atol(cl.c_str()));
+                if (!cl.empty()) {
+                    char* endptr;
+                    unsigned long parsed = std::strtoul(cl.c_str(), &endptr, 10);
+                    if (endptr != cl.c_str() && *endptr == '\0')
+                        _contentLength = static_cast<size_t>(parsed);
+                }
                 std::string te = getHeader("transfer-encoding");
                 if (te.find("chunked") != std::string::npos)
                     _chunked = true;

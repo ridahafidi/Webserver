@@ -47,8 +47,12 @@ int Webserv::createServerSocket(const ServerConfig& cfg) {
     if (fd < 0) return -1;
 
     int opt = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    fcntl(fd, F_SETFL, O_NONBLOCK);
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        close(fd); return -1;
+    }
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
+        close(fd); return -1;
+    }
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));

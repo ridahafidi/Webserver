@@ -98,7 +98,10 @@ std::string HttpResponse::buildResponse(int code,
     time_t now = time(NULL);
     char dateBuf[128];
     struct tm* gmt = gmtime(&now);
-    strftime(dateBuf, sizeof(dateBuf), "%a, %d %b %Y %H:%M:%S GMT", gmt);
+    if (gmt != NULL)
+        strftime(dateBuf, sizeof(dateBuf), "%a, %d %b %Y %H:%M:%S GMT", gmt);
+    else
+        dateBuf[0] = '\0';
     resp << "Date: " << dateBuf << "\r\n";
     resp << "Server: webserv/1.0\r\n";
 

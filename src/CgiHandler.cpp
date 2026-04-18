@@ -140,8 +140,12 @@ bool CgiHandler::launch() {
 
     const std::string& body = _req.getBody();
     if (!body.empty()) {
-        ssize_t written = write(_writeFd, body.c_str(), body.size());
-        (void)written;
+        size_t totalWritten = 0;
+        while (totalWritten < body.size()) {
+            ssize_t n = write(_writeFd, body.c_str() + totalWritten, body.size() - totalWritten);
+            if (n <= 0) break;
+            totalWritten += static_cast<size_t>(n);
+        }
     }
     close(_writeFd);
     _writeFd = -1;

@@ -162,7 +162,10 @@ bool Connection::onCgiReadable() {
             for (size_t i = 0; i < keyLow.size(); ++i)
                 keyLow[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(keyLow[i])));
             if (keyLow == "status") {
-                statusCode = std::atoi(val.c_str());
+                char* endptr;
+                long parsed = std::strtol(val.c_str(), &endptr, 10);
+                if (endptr != val.c_str() && parsed >= 100 && parsed <= 599)
+                    statusCode = static_cast<int>(parsed);
             } else if (keyLow == "content-type") {
                 contentType = val;
             } else {
