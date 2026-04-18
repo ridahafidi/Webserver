@@ -263,6 +263,7 @@ Access it at: `http://localhost:8080/cgi-bin/hello.py`
 ## 👤 Authors
 
 - **ridahafidi** — [github.com/ridahafidi](https://github.com/ridahafidi)
+- **hamzaboutaleb** — [github.com/hamzaboutaleb](https://github.com/hamzaboutaleb)
 
 ---
 
