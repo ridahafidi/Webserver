@@ -1,0 +1,7 @@
+# compiled objects and binary
+*.o
+webserv
+
+# uploaded files (keep directory placeholder)
+www/uploads/*
+!www/uploads/.gitkeep
