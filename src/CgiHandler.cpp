@@ -78,7 +78,12 @@ std::vector<std::string> CgiHandler::buildEnv() const {
             if (c == '-') key += '_';
             else key += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
         }
-        env.push_back(key + "=" + it->second);
+        std::string value = it->second;
+        for (size_t j = 0; j < value.size(); ++j) {
+            if (value[j] == '\r' || value[j] == '\n')
+                value[j] = ' ';
+        }
+        env.push_back(key + "=" + value);
     }
 
     return env;
@@ -155,18 +160,34 @@ bool CgiHandler::launch() {
     _writeFd = stdin_pipe[1];
 
     fcntl(_readFd, F_SETFL, O_NONBLOCK);
+    fcntl(_writeFd, F_SETFL, O_NONBLOCK);
 
     const std::string& body = _req.getBody();
     if (!body.empty()) {
         size_t totalWritten = 0;
         while (totalWritten < body.size()) {
             ssize_t n = write(_writeFd, body.c_str() + totalWritten, body.size() - totalWritten);
-            if (n <= 0) break;
+            if (n < 0) {
+                if (errno == EINTR)
+                    continue;
+                _error = true;
+                break;
+            }
+            if (n == 0)
+                break;
             totalWritten += static_cast<size_t>(n);
         }
+        if (totalWritten < body.size())
+            _error = true;
     }
     close(_writeFd);
     _writeFd = -1;
+
+    if (_error) {
+        if (_pid > 0)
+            kill(_pid, SIGTERM);
+        return false;
+    }
 
     return true;
 }

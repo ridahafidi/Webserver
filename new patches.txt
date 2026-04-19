@@ -1,0 +1,94 @@
+Webserv Patch Log
+Date: 2026-04-19
+
+Summary
+- Hardened HTTP parsing and request validation.
+- Fixed chunked parser edge cases and case-insensitive Transfer-Encoding handling.
+- Added protections against path traversal for read/delete/CGI paths.
+- Improved autoindex output escaping.
+- Improved connection and CGI robustness under non-blocking I/O pressure.
+- Added reusable test automation scripts (full scan, stress scan, unified runner).
+
+Patched Source Files
+
+1) src/HttpRequest.cpp
+- Added strict request-line validation:
+  - Rejects extra tokens in request line.
+  - Accepts only HTTP/1.0 and HTTP/1.1.
+  - Requires uppercase method token.
+  - Applies URI sanity and length limit.
+- Added parser-level safety limits:
+  - Request buffer hard cap.
+  - Header-size cap.
+  - Request/body cap before response layer.
+- Content-Length hardening:
+  - Rejects empty/non-numeric Content-Length.
+  - Rejects conflicting duplicate Content-Length values.
+- Transfer-Encoding hardening:
+  - Case-insensitive handling of transfer-encoding value.
+  - Rejects requests containing both Content-Length and chunked TE.
+- Chunked parsing hardening:
+  - Rejects invalid chunk-size tokens.
+  - Validates CRLF after each chunk payload.
+  - Handles terminal 0-chunk with optional trailers.
+  - Rejects malformed chunked bodies with 400.
+
+2) src/HttpResponse.cpp
+- Added path normalization helper for relative paths to prevent escaping root via .. segments.
+- Added realpath-based root-bound checks for existing paths used by static/dir/CGI serving.
+- Added safer location prefix matching boundary check.
+- Added HTML escaping for autoindex page content (URI and file names).
+- Added upload filename safety checks and root-bound parent validation for upload destination.
+- Added CGI interpreter presence guard (cgi_pass required when cgi_ext path is executed).
+- Preserved expected DELETE semantics:
+  - Missing target => 404.
+  - Traversal attempts blocked => 403 via normalized path checks.
+
+3) src/Connection.cpp
+- Updated writable-path behavior to refresh last-activity timestamp on EAGAIN/EWOULDBLOCK.
+- Reduces false idle-timeout closes during backpressure.
+
+4) src/CgiHandler.cpp
+- Sanitized CR/LF in header-derived CGI environment values.
+- Improved CGI stdin write loop handling:
+  - Handles EINTR retries.
+  - Flags write failures/partial writes.
+- Launch now fails cleanly if body cannot be fully delivered to CGI stdin.
+- Set CGI stdin pipe to non-blocking mode to reduce event-loop stall risk.
+
+Test Automation Added
+
+5) scripts/full_scan.sh
+- Full 42-style validation suite:
+  - Core route/method checks.
+  - Parser abuse checks.
+  - Chunked valid/invalid checks.
+  - Header-size and body-size checks.
+  - Traversal checks (read/delete).
+  - Autoindex escape check.
+  - Concurrency smoke test.
+- Exits non-zero if any check fails.
+
+6) scripts/stress_server_cgi.sh
+- Stress tests for:
+  - Static GET throughput.
+  - Mixed endpoint behavior.
+  - CGI GET stress.
+  - CGI POST stress.
+- Reports status distributions and latency summary.
+
+7) scripts/run_all_scans.sh
+- Unified wrapper to run full_scan + stress script in one command.
+- Supports --start and --quick modes.
+- Produces timestamped report artifacts under reports/scan_YYYYMMDD_HHMMSS.
+- Writes summary + full logs for both scan types.
+
+Generated Artifacts During Validation
+- reports/ (scan run folders and logs)
+- webserv (rebuilt binary)
+- ok= (unexpected file currently present in repo root)
+
+Validation Outcome During Patch Session
+- full_scan.sh: PASS (all checks)
+- stress_server_cgi.sh: PASS (quick run and sample heavier run)
+- run_all_scans.sh --start --quick: PASS with overall_status=PASS

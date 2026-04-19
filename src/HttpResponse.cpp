@@ -7,6 +7,95 @@
 #include <cstring>
 #include <cerrno>
 #include <ctime>
+#include <vector>
+#include <limits.h>
+#include <cstdlib>
+
+namespace {
+bool hasPathPrefix(const std::string& path, const std::string& root) {
+    if (root == "/")
+        return true;
+    if (path.size() < root.size())
+        return false;
+    if (path.compare(0, root.size(), root) != 0)
+        return false;
+    return path.size() == root.size() || path[root.size()] == '/';
+}
+
+bool resolveRealPath(const std::string& in, std::string& out) {
+    char buf[PATH_MAX];
+    if (realpath(in.c_str(), buf) == NULL)
+        return false;
+    out = buf;
+    return true;
+}
+
+bool isExistingPathUnderRoot(const std::string& root, const std::string& path) {
+    std::string realRoot;
+    std::string realPath;
+    if (!resolveRealPath(root, realRoot) || !resolveRealPath(path, realPath))
+        return false;
+    return hasPathPrefix(realPath, realRoot);
+}
+
+bool isParentUnderRoot(const std::string& root, const std::string& path) {
+    size_t slash = path.rfind('/');
+    std::string parent = (slash == std::string::npos) ? "." : path.substr(0, slash);
+    std::string realRoot;
+    std::string realParent;
+    if (!resolveRealPath(root, realRoot) || !resolveRealPath(parent, realParent))
+        return false;
+    return hasPathPrefix(realParent, realRoot);
+}
+
+bool normalizeRelativePath(const std::string& relPath, std::string& normalized) {
+    std::vector<std::string> parts;
+    size_t i = 0;
+    while (i <= relPath.size()) {
+        size_t j = relPath.find('/', i);
+        if (j == std::string::npos)
+            j = relPath.size();
+        std::string part = relPath.substr(i, j - i);
+
+        if (!part.empty() && part != ".") {
+            if (part == "..") {
+                if (parts.empty())
+                    return false;
+                parts.pop_back();
+            } else {
+                parts.push_back(part);
+            }
+        }
+
+        i = j + 1;
+        if (j == relPath.size())
+            break;
+    }
+
+    normalized = "/";
+    for (size_t k = 0; k < parts.size(); ++k) {
+        normalized += parts[k];
+        if (k + 1 < parts.size())
+            normalized += "/";
+    }
+    return true;
+}
+
+std::string escapeHtml(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        if (c == '&') out += "&amp;";
+        else if (c == '<') out += "&lt;";
+        else if (c == '>') out += "&gt;";
+        else if (c == '"') out += "&quot;";
+        else if (c == '\'') out += "&#39;";
+        else out += c;
+    }
+    return out;
+}
+}
 
 HttpResponse::HttpResponse(const HttpRequest& req,
                            const ServerConfig& config,
@@ -69,7 +158,10 @@ const LocationConfig* HttpResponse::findLocation(const std::string& path) const 
     for (size_t i = 0; i < _cfg.locations.size(); ++i) {
         const LocationConfig& loc = _cfg.locations[i];
         if (path.size() >= loc.path.size()
-            && path.substr(0, loc.path.size()) == loc.path) {
+            && path.substr(0, loc.path.size()) == loc.path
+            && (loc.path == "/"
+                || path.size() == loc.path.size()
+                || path[loc.path.size()] == '/')) {
             if (loc.path.size() >= bestLen) {
                 bestLen = loc.path.size();
                 best = &_cfg.locations[i];
@@ -174,17 +266,19 @@ std::string HttpResponse::serveDirectory(const std::string& dirpath,
     if (!dir) return buildErrorPage(403);
 
     std::ostringstream html;
-    html << "<!DOCTYPE html><html><head><title>Index of " << uriPath << "</title></head>"
-         << "<body><h1>Index of " << uriPath << "</h1><hr><ul>";
+        std::string escapedUri = escapeHtml(uriPath);
+        html << "<!DOCTYPE html><html><head><title>Index of " << escapedUri << "</title></head>"
+            << "<body><h1>Index of " << escapedUri << "</h1><hr><ul>";
 
     struct dirent* entry;
     while ((entry = readdir(dir)) != NULL) {
         std::string name = entry->d_name;
         if (name == ".") continue;
+        std::string escapedName = escapeHtml(name);
         html << "<li><a href=\"" << uriPath;
         if (uriPath.empty() || uriPath[uriPath.size() - 1] != '/')
             html << "/";
-        html << name << "\">" << name << "</a></li>";
+        html << escapedName << "\">" << escapedName << "</a></li>";
     }
     closedir(dir);
 
@@ -210,7 +304,13 @@ std::string HttpResponse::handlePost(const LocationConfig& loc, const std::strin
         if (slash != std::string::npos)
             filename = filename.substr(slash + 1);
         if (filename.empty()) filename = "upload";
+        if (filename == "." || filename == ".."
+            || filename.find('/') != std::string::npos
+            || filename.find('\\') != std::string::npos)
+            return buildErrorPage(403);
         std::string dest = loc.upload_dir + "/" + filename;
+        if (!isParentUnderRoot(loc.upload_dir, dest))
+            return buildErrorPage(403);
 
         std::ofstream out(dest.c_str(), std::ios::binary);
         if (!out.is_open())
@@ -264,14 +364,22 @@ std::string HttpResponse::build() {
     if (relPath.empty() || relPath[0] != '/')
         relPath = "/" + relPath;
 
-    std::string filepath = root + relPath;
+    std::string normalizedRel;
+    if (!normalizeRelativePath(relPath, normalizedRel))
+        return buildErrorPage(403);
+
+    std::string filepath = root + normalizedRel;
 
     // CGI check
     if (!loc->cgi_ext.empty()) {
         size_t dot = uriPath.rfind('.');
         if (dot != std::string::npos && uriPath.substr(dot) == loc->cgi_ext) {
+            if (loc->cgi_pass.empty())
+                return buildErrorPage(500);
             struct stat st;
             if (stat(filepath.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+                if (!isExistingPathUnderRoot(root, filepath))
+                    return buildErrorPage(403);
                 _cgiHandler = new CgiHandler(_req, *loc, filepath, _clientIP);
                 if (_cgiHandler->launch()) {
                     _isCgi = true;
@@ -284,8 +392,9 @@ std::string HttpResponse::build() {
         }
     }
 
-    if (method == "DELETE")
+    if (method == "DELETE") {
         return handleDelete(filepath);
+    }
 
     if (method == "POST")
         return handlePost(*loc, filepath);
@@ -294,6 +403,8 @@ std::string HttpResponse::build() {
     struct stat st;
     if (stat(filepath.c_str(), &st) != 0)
         return buildErrorPage(404);
+    if (!isExistingPathUnderRoot(root, filepath))
+        return buildErrorPage(403);
 
     if (S_ISDIR(st.st_mode))
         return serveDirectory(filepath, uriPath, *loc);

@@ -1,0 +1,18 @@
+Stress config: TOTAL=300 CONCURRENCY=20 CGI_TOTAL=120 CGI_CONCURRENCY=10
+
+[1/4] Static GET stress on / ...
+    300 200
+time_total avg=0.220304s min=0.029866s max=0.319880s
+
+[2/4] Mixed endpoint stress (/ /files /nope) ...
+    200 200
+    100 404
+
+[3/4] CGI GET stress ...
+    120 200
+
+[4/4] CGI POST stress ...
+    120 200
+
+Post-stress health check: 200 0.020387s
+Done.

@@ -1,0 +1,12 @@
+Webserv unified scan
+timestamp=20260419_191802
+root=/mnt/c/Users/RIDA/Desktop/webserver
+start_server=1
+quick_mode=1
+stress_total=300
+stress_concurrency=20
+cgi_total=120
+cgi_concurrency=10
+full_scan_status=PASS
+stress_scan_status=PASS
+overall_status=PASS

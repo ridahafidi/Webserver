@@ -124,7 +124,10 @@ bool Connection::onWritable() {
 
     ssize_t n = send(_fd, _writeBuffer.c_str(), _writeBuffer.size(), 0);
     if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return true;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            _lastActivity = time(NULL);
+            return true;
+        }
         _state = CONN_CLOSE;
         return false;
     }
