@@ -1,0 +1,31 @@
+== Core HTTP ==
+[PASS] GET / 8080 => 200
+[PASS] GET / 8081 => 200
+[PASS] VHOST api.local => 200
+[PASS] POST /files => 405
+[PASS] GET /old => 301
+[PASS] CGI GET => 200
+[PASS] Upload small => 201
+[PASS] OPTIONS / => 501
+[PASS] PUT / => 501
+== Parser/Protocol Abuse ==
+[PASS] Bad request line => HTTP/1.1 400 Bad Request
+[PASS] HTTP/9.9 rejected => HTTP/1.1 400 Bad Request
+[PASS] Malformed header no colon => HTTP/1.1 400 Bad Request
+[PASS] Duplicate CL mismatch => HTTP/1.1 400 Bad Request
+[PASS] Invalid CL token => HTTP/1.1 400 Bad Request
+[PASS] CL+TE conflict => HTTP/1.1 400 Bad Request
+[PASS] Chunk invalid size => HTTP/1.1 400 Bad Request
+[PASS] Chunk valid => HTTP/1.1 201 Created
+[PASS] Huge header => 400
+== Traversal/XSS ==
+[PASS] Traversal GET => 403
+[PASS] Traversal DELETE => 403
+[PASS] Traversal DELETE kept canary file
+[PASS] Autoindex escapes HTML filename
+== Limits ==
+[PASS] api.local 2MB POST => 413
+== Concurrency Smoke ==
+[PASS] 800 concurrent GET / all 200
+
+Summary: pass=24 fail=0
